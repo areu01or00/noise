@@ -9,8 +9,11 @@
   "overrides": [
     "seed=0",
     "num_iterations=975",
-    "data=logs/speedrun-147908/rows",
-    "save_steps=975",
-    "val_every=1000000"
+    "data=/__modal/volumes/vo-Kd9ELzcEP3mN4MxTfx56b3/runs/l925/rows",
+    "save_steps=925",
+    "val_every=1000000",
+    "stop_at=925",
+    "leap_back=225",
+    "leap=0.2"
   ]
 }

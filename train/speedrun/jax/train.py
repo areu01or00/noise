@@ -78,6 +78,10 @@ class Hyperparameters:
     anvil_wd: float = 2.25  # ANVIL II's cautious weight decay (times its scheduled rate)
     warmup_steps: int = 0
     cooldown_steps: int = 390  # the last 40%
+    # finish: stop after stop_at updates (the schedules stay num_iterations'), then w <- w - leap (w - w_{stop - leap_back})
+    stop_at: int = 0  # 0: num_iterations
+    leap_back: int = 0
+    leap: float = 0.0
 
 
 def parse_args(argv):
@@ -887,6 +891,9 @@ def main():
     for length, compiled in train_steps.items():  # first runs (CUDA graphs, collectives' setup) on copies
         jax.block_until_ready(compiled(jax.tree.map(jnp.copy, params), jax.tree.map(jnp.copy, buffers),
                                        dummy(length), dummy(length), jnp.int32(0), jnp.float32(1)))
+    leap_to = jax.jit(lambda p, a: jax.tree.map(
+        lambda w, w0: (w.astype(F32) + hp.leap * (w0.astype(F32) - w.astype(F32))).astype(w.dtype), p, a))
+    jax.block_until_ready(leap_to(params, params))  # compiled outside the timer
     evaluate = make_evaluate(cfg, mesh).lower(params, val_rows).compile()
     val_loss_of = lambda p: float(evaluate(p, val_rows)) / val_tokens
     print0(f"compiled in {time.perf_counter() - compile_start:.0f}s")
@@ -914,8 +921,9 @@ def main():
             log_update(*pending, train_time)
         return train_time, None, None
 
+    stop, anchor = hp.stop_at or hp.num_iterations, None
     while True:
-        last = step >= hp.num_iterations or exhausted
+        last = step >= stop or exhausted
         if last or step % hp.val_every == 0:
             train_time, segment_start, pending = sync(train_time, segment_start, pending)
             val_loss = val_loss_of(params)
@@ -941,6 +949,10 @@ def main():
         params, buffers, loss = train_steps[length](params, buffers, inputs, targets, jnp.int32(step),
                                                     jnp.float32(lr_scale(step, hp)))
         step += 1
+        if hp.leap and step == stop - hp.leap_back:
+            anchor = jax.tree.map(jnp.copy, params)
+        if hp.leap and step == stop:  # a weight-space move, no learning signal
+            params = leap_to(params, anchor)
         if pending:  # the previous update's loss: waits for it only, while this one runs
             log_update(*pending, train_time + time.perf_counter() - segment_start)
         pending = (step, loss)

@@ -36,7 +36,9 @@ from utils.prepare_data import TRAIN_ROWS, VAL_ROWS, load_rows
 SEED = 0
 TARGET = 4.2
 JAX = Path(__file__).resolve().parent / 'jax'
-STEPS = 975
+STEPS = 975  # the schedules' length
+STOP = 925  # updates run
+LEAP_BACK, LEAP = 225, 0.2  # after the last update: w <- w - LEAP (w - w_{STOP - LEAP_BACK})
 STEP_LINE = re.compile(r'^step:(\d+)/\d+ train_loss:([\d.]+) train_time:(\d+)ms')
 
 
@@ -66,8 +68,8 @@ def main():
     write_rows(args.data_dir, cache)
 
     # the recipe is train.py's defaults; validation only at the end (outside the timer)
-    overrides = [f'seed={SEED}', f'num_iterations={STEPS}', f'data={cache}', f'save_steps={STEPS}',
-                 'val_every=1000000']
+    overrides = [f'seed={SEED}', f'num_iterations={STEPS}', f'data={cache}', f'save_steps={STOP}',
+                 'val_every=1000000', f'stop_at={STOP}', f'leap_back={LEAP_BACK}', f'leap={LEAP}']
     (args.output / 'config.json').write_text(json.dumps(dict(
         script=shown(__file__), trainer='train/speedrun/jax/train.py', world=8, batch=4, steps=STEPS,
         seed=SEED, target=TARGET, overrides=[f'data={shown(cache)}' if o.startswith('data=') else o for o in overrides],
@@ -96,15 +98,15 @@ def main():
 
     shutil.copy(JAX / 'logs' / f'{run_id}.txt', args.output / 'trainer.txt')  # the trainer's log, with its source
     weights = args.output / 'final.npz'
-    checkpoint = JAX / 'logs' / f'{run_id}-{STEPS}.npz'
+    checkpoint = JAX / 'logs' / f'{run_id}-{STOP}.npz'
     subprocess.run([sys.executable, str(JAX / 'train.py'), 'export', str(checkpoint), str(weights)],
                    cwd=JAX, env=env | {'JAX_PLATFORMS': 'cpu'}, check=True)
     arrays = np.load(weights)
     state = {name: torch.from_numpy(arrays[name]) for name in arrays.files if name != 'meta'}
     torch.save(state, args.output / 'final.pt')
     val_loss = evaluate(state, args.data_dir)
-    result = dict(val_loss=val_loss, train_seconds=round(train_seconds, 2), steps=STEPS,
-                  tokens=STEPS * 4 * 2048, reached_target=val_loss <= TARGET, trainer_log='trainer.txt')
+    result = dict(val_loss=val_loss, train_seconds=round(train_seconds, 2), steps=STOP,
+                  tokens=STOP * 4 * 2048, reached_target=val_loss <= TARGET, trainer_log='trainer.txt')
     (args.output / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
     print(json.dumps(result), flush=True)
 
