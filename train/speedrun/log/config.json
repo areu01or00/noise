@@ -52,10 +52,10 @@
     "emb_scale": 750.0,
     "lambda_scale": 15.0
   },
-  "steps": 1823,
+  "steps": 1795,
   "overrides": [],
   "epoch_updates": 1823,
-  "train_rows": 14584,
+  "train_rows": 14360,
   "upstream": "qlabs-eng/noise@3343973b6f1af119effcdea2622f1fe672c51b1e",
   "additions": [
     "identity_handoff_at_355",
@@ -79,7 +79,9 @@
     "batched_update_telemetry",
     "fused_gluon_chain_kernels",
     "sharded_anvil_bf16_async_collectives",
-    "split_identity_graph"
+    "split_identity_graph",
+    "fixed_per_tensor_merge_table",
+    "cut_stop_1440"
   ],
   "torch_version": "2.10.0+cu128",
   "merge_sketch": {

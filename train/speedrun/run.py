@@ -1,6 +1,7 @@
-"""Track 2: an identity-path phase hands off to Cut; held-out training rows then select a merge of weight averages.
+"""Track 2: an identity-path phase hands off to Cut, which stops 28 updates early; a fixed per-tensor merge of weight
+averages ends the run.
 
-Builds on qlabs-eng/noise#51 (itself on #44); the kernels it calls live next to this file (visit_chain*.py,
+Builds on qlabs-eng/noise#52 (on #51, itself on #44); the kernels it calls live next to this file (visit_chain*.py,
 visit_gluon_root.py, query_factored_gluon.py, query_gluon.py, moment_kernels.py, window_topk.py, project_values.py).
 
 1. Identity phase: 355 updates of 8 rows of #44's 1831-update plan (#51: 300), with #29's identity-path credit
@@ -37,8 +38,11 @@ visit_gluon_root.py, query_factored_gluon.py, query_gluon.py, moment_kernels.py,
    ANVIL weight decay is zero after the first 275/1043 of the updates. Each rank updates 1/8 of every ANVIL shape
    batch (bf16 reduce-scatter, polar step, all-gather); the other gradients are all-reduced in bf16; the collectives
    are waited where first read.
-3. Weight averages (decays 0.03 and 0.02, every 5 updates over the last 70% of the Cut rows) are merged part by part
-   at 0.75 or 1.0, chosen on 64 held-out rows (a race over 4 keys).
+   Cut runs 1440 of the epoch's 1468 updates (CUT_STOP), on the full epoch's LR schedule; the last 224 rows go unused.
+3. Weight averages (decays 0.03 and 0.02, every 5 updates over the last 70% of the Cut rows) are merged with fixed
+   per-tensor coefficients: w + a (avg_0.02 - w), a in [-0.25, 1.25] (MERGE_TABLE), in place of #52's screened 0.75
+   or 1.0 per part. The table was chosen offline on identity-phase training rows of a 1440-update run (coordinate
+   sweeps, checked on disjoint rows); no validation rows were read.
 
 config.json lists the changes against #44 (qlabs-eng/noise@3343973b) under "additions".
 
@@ -1814,6 +1818,82 @@ def prepare_resident_merge_score(model, settings, rank, world):
     return scorer
 
 
+CUT_STOP = 1440  # Cut updates run: 28 before the epoch's 1468, on the full-epoch LR schedule
+MERGE_TABLE = {  # per-tensor pull toward the 0.02-decay average (Tensor Slayer values blend), fixed constants
+    'resid_lambdas': 0.75,
+    'x0_lambdas': 0.875,
+    'transformer.wte.weight': 1.0,
+    'transformer.h.0.attn.c_q.weight': 1.25,
+    'transformer.h.0.attn.c_k.weight': 0.5,
+    'transformer.h.0.attn.c_v.weight': 1.125,
+    'transformer.h.0.attn.c_proj.weight': 1.0,
+    'transformer.h.0.mlp.c_fc.weight': 1.25,
+    'transformer.h.0.mlp.c_proj.weight': 0.875,
+    'transformer.h.1.attn.c_q.weight': 1.0,
+    'transformer.h.1.attn.c_k.weight': 0.875,
+    'transformer.h.1.attn.c_v.weight': -0.25,
+    'transformer.h.1.attn.c_proj.weight': 1.125,
+    'transformer.h.1.attn.ve_gate.weight': 1.0,
+    'transformer.h.1.mlp.c_fc.weight': 0.75,
+    'transformer.h.1.mlp.c_proj.weight': 0.75,
+    'transformer.h.2.attn.c_q.weight': 0.375,
+    'transformer.h.2.attn.c_k.weight': 0.0,
+    'transformer.h.2.attn.c_v.weight': 0.875,
+    'transformer.h.2.attn.c_proj.weight': 0.625,
+    'transformer.h.2.mlp.c_fc.weight': 0.875,
+    'transformer.h.2.mlp.c_proj.weight': 0.375,
+    'transformer.h.3.attn.c_q.weight': 0.25,
+    'transformer.h.3.attn.c_k.weight': 0.375,
+    'transformer.h.3.attn.c_v.weight': 0.125,
+    'transformer.h.3.attn.c_proj.weight': 1.125,
+    'transformer.h.3.attn.ve_gate.weight': 0.125,
+    'transformer.h.3.mlp.c_fc.weight': 0.625,
+    'transformer.h.3.mlp.c_proj.weight': 0.0,
+    'transformer.h.4.attn.c_q.weight': 0.875,
+    'transformer.h.4.attn.c_k.weight': 1.0,
+    'transformer.h.4.attn.c_v.weight': 0.625,
+    'transformer.h.4.attn.c_proj.weight': 0.5,
+    'transformer.h.4.mlp.c_fc.weight': 0.875,
+    'transformer.h.4.mlp.c_proj.weight': 0.5,
+    'transformer.h.5.attn.c_q.weight': 0.375,
+    'transformer.h.5.attn.c_k.weight': 0.5,
+    'transformer.h.5.attn.c_v.weight': 0.5,
+    'transformer.h.5.attn.c_proj.weight': 1.0,
+    'transformer.h.5.attn.ve_gate.weight': 0.75,
+    'transformer.h.5.mlp.c_fc.weight': 0.5,
+    'transformer.h.5.mlp.c_proj.weight': 0.0,
+    'transformer.h.6.attn.c_q.weight': 0.125,
+    'transformer.h.6.attn.c_k.weight': 0.25,
+    'transformer.h.6.attn.c_v.weight': 0.75,
+    'transformer.h.6.attn.c_proj.weight': 0.125,
+    'transformer.h.6.mlp.c_fc.weight': 0.625,
+    'transformer.h.6.mlp.c_proj.weight': 0.375,
+    'transformer.h.7.attn.c_q.weight': 0.375,
+    'transformer.h.7.attn.c_k.weight': 0.375,
+    'transformer.h.7.attn.c_v.weight': 1.25,
+    'transformer.h.7.attn.c_proj.weight': 1.125,
+    'transformer.h.7.attn.ve_gate.weight': 1.25,
+    'transformer.h.7.mlp.c_fc.weight': 0.5,
+    'transformer.h.7.mlp.c_proj.weight': 0.375,
+    'lm_head.weight': 1.0,
+    'value_embeds.1.weight': 0.875,
+    'value_embeds.3.weight': 0.75,
+    'value_embeds.5.weight': 0.625,
+    'value_embeds.7.weight': 0.375,
+}
+
+
+def fixed_merge(model, means):
+    """The end merge with fixed per-tensor coefficients: w + a (avg_0.02 - w), no screening."""
+    keyof = {id(v): n for n, v in model.state_dict(keep_vars=True).items()}
+    mean = means[MERGE_DECAYS.index(0.02)]
+    with torch.no_grad():
+        for q, m in zip(model.parameters(), mean):
+            a = MERGE_TABLE[keyof[id(q)]]
+            q.copy_((q.float() + a * (m - q.float())).to(q.dtype))
+    return dict(merge='fixed_table')
+
+
 @torch.no_grad()
 def end_merge(model, means, rows, rank, scorer, settings):
     scorer.bind(rows)
@@ -2728,6 +2808,7 @@ def train_stages(args, settings, device, rank, world):
                         'cut_mixing_scalar_contraction', 'cut_estimate_cuda_graph', 'resident_merge_scorer',
                         'response_ranked_mlp_routes', 'batched_update_telemetry', 'fused_gluon_chain_kernels',
                         'sharded_anvil_bf16_async_collectives', 'split_identity_graph',
+                        'fixed_per_tensor_merge_table', 'cut_stop_1440',
                     ],
                     torch_version=torch.__version__,
                     merge_sketch=dict(columns=MERGE_SKETCH_COLUMNS, output_rank=MERGE_K, seed=SEED),
@@ -2859,9 +2940,14 @@ def train_stages(args, settings, device, rank, world):
                             for m, q in zip(mean, model.parameters()):
                                 m.lerp_(q.detach().float(), a)
         extra = {}
+        if means and args.save_premerge and rank == 0:  # for re-choosing MERGE_TABLE (merge_table.py), not record runs
+            keyof = {id(v): n for n, v in model.state_dict(keep_vars=True).items()}
+            names = [keyof[id(q)] for q in model.parameters()]
+            torch.save(dict(decays=MERGE_DECAYS, state={n: v.detach().cpu() for n, v in model.state_dict().items()},
+                            means=[{n: m.cpu() for n, m in zip(names, mean)} for mean in means]), args.save_premerge)
         if means:
             merge_start = time.perf_counter()
-            extra.update(end_merge(model, means, holdout_rows, rank, scorer, settings))
+            extra.update(fixed_merge(model, means))
             torch.cuda.synchronize()
             extra['merge_seconds'] = round(time.perf_counter() - merge_start, 2)
             means = None
@@ -2893,7 +2979,9 @@ def main():
     parser.add_argument('--data-dir', type=Path, default=Path('data'))
     parser.add_argument('--output', type=Path, default=Path('logs/speedrun'))
     parser.add_argument('--no-ckpt', action='store_true')
-    parser.add_argument('--steps', type=int,
+    parser.add_argument('--save-premerge', type=Path,
+                        help='save weights and averages before the merge, for merge_table.py (timed: not for record runs)')
+    parser.add_argument('--steps', type=int, default=CUT_STOP,
                         help='Cut updates to run after the identity phase; preserves the full-epoch LR schedule.')
     parser.add_argument('--set', nargs='*', default=[], metavar='KEY=VALUE',
                         help='screening overrides: a Settings field (lower case) or a module constant (upper case)')
